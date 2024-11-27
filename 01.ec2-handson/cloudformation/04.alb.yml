@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: ALB template
+
+Parameters:
+  System:
+    Type: String
+    Default: ec2-handson
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet::Id
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet::Id
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+
+  TargetId:
+    Type: String
+
+Resources:
+# ------------------------------------------------------------#
+# ALB Target Group
+# ------------------------------------------------------------# 
+  ALBTargetGroup: 
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      VpcId: !Ref VpcId
+      Name: !Sub ${System}-alb-tg
+      Protocol: HTTP
+      Port: 8501 # port to connect alb targetgroup with app
+      Targets: 
+        - Id: !Ref TargetId # EC2 ID
+          Port: 8501 # port to connect alb targetgroup with app
+  
+# ------------------------------------------------------------#
+# ALB
+# ------------------------------------------------------------# 
+  ALB: 
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: ipv4
+      Name: !Sub ${System}-alb
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref SecurityGroupId
+      Subnets: 
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetC
+
+# ------------------------------------------------------------#
+# ALB Listner
+# ------------------------------------------------------------# 
+  ALBListener: 
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      DefaultActions: 
+        - TargetGroupArn: !Ref ALBTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref ALB
+      Port: 80 # port to receive request from internet
+      Protocol: HTTP

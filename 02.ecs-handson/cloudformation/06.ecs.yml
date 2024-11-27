@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECS template
+
+Parameters:
+  System:
+    Type: String
+    Default: ecs-handson
+
+  TargetGroupArn:
+    Type: String
+    Default: arn
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnetC:
+    Type: AWS::EC2::Subnet::Id
+    
+  Repository:
+    Type: String
+    Default: Repository name
+
+  Image:
+    Type: String
+    Default: image name
+
+Resources:
+# ------------------------------------------------------------#
+# CloudWatch Logs
+# ------------------------------------------------------------# 
+  ECSLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub "/ecs/logs/${System}-log"
+
+# ------------------------------------------------------------#
+# IAM Roles and Policy
+# ------------------------------------------------------------# 
+# task execution role to pass to task definition
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      RoleName: !Sub ${System}-task-execution-role
+
+# task role to pass to task definition
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      RoleName: !Sub ${System}-task-role
+
+  TaskRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "ssmmessages:CreateControlChannel"
+              - "ssmmessages:CreateDataChannel"
+              - "ssmmessages:OpenControlChannel"
+              - "ssmmessages:OpenDataChannel"
+            Resource: '*'
+      PolicyName: !Sub ${System}-task-role-policy
+      Roles:
+        - !Ref TaskRole
+
+# ecs autoscaling role to pass to ecs autocaling target
+  ECSScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - application-autoscaling.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      RoleName: !Sub ${System}-scaling-role
+      
+  ECSScalingPolicyPolicy:
+    Type: AWS::IAM::Policy   
+    Properties: 
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: 
+              - ecs:DescribeServices
+              - ecs:UpdateService
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DescribeAlarms
+            Resource: '*'
+      PolicyName: !Sub ${System}-scaling-policy
+      Roles: 
+        - !Ref ECSScalingRole
+
+# ------------------------------------------------------------#
+# ECS Resources
+# ------------------------------------------------------------# 
+# ecs cluster to manage ecs overall
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      CapacityProviders:
+        - FARGATE
+      ClusterName: !Sub ${System}-ecs-cluster
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+# ecs task definition to handle ecs task
+  ECSTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Name: !Sub ${System}-ecs-task
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Repository}:${Image}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: 
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-stream-prefix: !Sub "${System}-log"
+              awslogs-region: !Ref "AWS::Region"
+          PortMappings:
+            - ContainerPort: 8501 # port to connect alb targetgroup with app
+              HostPort: 8501 # port to connect alb targetgroup with app
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref TaskRole
+      Family: !Sub ${System}-task-def
+
+# ecs service to handle connection with alb
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Sub ${System}-ecs-service
+      TaskDefinition: !Ref ECSTaskDef
+      DesiredCount: 1 # number of tasks to run, determines the scaling baseline
+      EnableExecuteCommand: true # enables ecs exec to execute commands directly in the container
+      LoadBalancers:
+        - ContainerName: !Sub ${System}-ecs-task
+          ContainerPort: 8501 # port to connect alb targetgroup with app
+          TargetGroupArn: !Ref TargetGroupArn
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref SecurityGroupId
+          Subnets:
+            - !Ref PrivateSubnetA
+            - !Ref PrivateSubnetC
+
+# ------------------------------------------------------------#
+# ECS Scaling Target, Policy
+# ------------------------------------------------------------#
+# Configuration for ECS Autoscaling Target
+  ECSScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 3 # max number of tasks
+      MinCapacity: 1 # min number of tasks
+      ResourceId: !Sub service/${ECSCluster}/${ECSService.Name}
+      RoleARN: !GetAtt ECSScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+# Configuration for ECS Scaling Policy
+  ECSScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${System}-ecs-cpu-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ECSScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization # scale out/in based on average cpu usage
+        ScaleInCooldown: 100 # time seconds until starting the scale-in
+        ScaleOutCooldown: 0 # time seconds until starting the scale-out
+        TargetValue: 30.0 # threashold of cpu usage

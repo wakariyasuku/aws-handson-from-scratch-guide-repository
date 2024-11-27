@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFront S3 template
+
+Parameters:
+  System:
+    Type: String
+    Default: cloudfront-s3-handson                   
+
+Resources:
+#-----------------------------------------------------------------------------
+# S3 bucket
+#-----------------------------------------------------------------------------
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub # add random suffix due to avoiding name collisions
+        - "${System}-${RandomSuffix}"
+        - RandomSuffix: !Select [2, !Split ["/", !Ref AWS::StackId]]
+
+#-----------------------------------------------------------------------------
+# S3 Bucket Policy
+#-----------------------------------------------------------------------------
+# allow the requests came from cloudfront
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${S3Bucket}/*
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+#-----------------------------------------------------------------------------
+# Origin Access Controle 
+#-----------------------------------------------------------------------------
+# to securely connect CloudFront to the S3 bucket by enforcing signed requests
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${System}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+#-----------------------------------------------------------------------------
+# CloudFront 
+#-----------------------------------------------------------------------------
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${System}-distribution
+        Origins:
+          - DomainName: !GetAtt S3Bucket.DomainName
+            Id: S3Origin
+            OriginAccessControlId: !GetAtt OAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # recommmended cashe policy for s3 hosting
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html # HTML file name at root directly on S3 bucket
+        PriceClass: PriceClass_200 # 200 incudes Asia regions
+        HttpVersion: http2and3 # to apply for all http methods
