@@ -90,7 +90,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
       - Key: Name
-        Value: !Sub ${System}-private-subnet-bastion-endpoint        
+        Value: !Sub ${System}-private-subnet-endpoint        
 
 # ------------------------------------------------------------#
 # Internet Gateway
